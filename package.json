@@ -1,0 +1,14 @@
+{
+  "name": "context-space",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "install:all": "npm --prefix apps/desktop install && npm --prefix apps/extension install",
+    "dev": "npm --prefix apps/desktop run tauri dev",
+    "build": "npm --prefix apps/extension run build && npm --prefix apps/desktop run tauri build",
+    "build:web": "npm --prefix apps/desktop run build && npm --prefix apps/extension run build",
+    "lint": "npm --prefix apps/desktop run lint && npm --prefix apps/extension run typecheck",
+    "test": "npm --prefix apps/desktop test && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "format:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check"
+  }
+}
