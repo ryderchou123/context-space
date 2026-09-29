@@ -44,6 +44,7 @@ export interface Workspace {
 export interface AppSnapshot {
   workspaces: Workspace[]
   activeWorkspaceId?: string
+  activeWorkspaceRecovered?: boolean
   extensionConnected: boolean
   bridgeToken: string
   bridgePort: number
@@ -61,3 +62,20 @@ export interface WorkspaceDraft {
 }
 
 export interface OperationResult { message: string; warnings: string[] }
+
+export interface LogEntry { at: string; event: string; detail: string }
+
+export interface DebugInfo {
+  activeWorkspaceId?: string
+  activeWorkspaceName?: string
+  activeWorkspaceRecovered: boolean
+  extensionConnected: boolean
+  extensionLastSeenSecs?: number
+  databasePath: string
+  databaseStatus: string
+  schemaVersion: number
+  lastSessionTabs: number
+  trackedApps: { displayName: string; running: boolean }[]
+  lastTransition?: LogEntry
+  recentEvents: LogEntry[]
+}
