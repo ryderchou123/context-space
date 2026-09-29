@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    # Windows because the product targets Windows (Win32 window APIs, WebView2, NSIS bundle).
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/extension/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      # Every step below fails the job on a non-zero exit; nothing is allowed to fail silently.
+      - name: Install dependencies
+        run: npm run install:ci
+      - name: Formatting check
+        run: npm run format:check
+      - name: Lint (oxlint + clippy -D warnings)
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Regression tests
+        run: npm run test:regression
+      - name: Rust tests (unit, integration, bridge)
+        run: npm run test:rust
+      - name: Web and extension build
+        run: npm run build:web
+      - name: End-to-end tests (Playwright, installed Edge)
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/desktop/test-results
+          retention-days: 7
+      - name: Tauri production build
+        run: npm run build

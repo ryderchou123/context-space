@@ -4,11 +4,22 @@
   "version": "0.1.0",
   "scripts": {
     "install:all": "npm --prefix apps/desktop install && npm --prefix apps/extension install",
+    "install:ci": "npm --prefix apps/desktop ci && npm --prefix apps/extension ci",
     "dev": "npm --prefix apps/desktop run tauri dev",
     "build": "npm --prefix apps/extension run build && npm --prefix apps/desktop run tauri build",
     "build:web": "npm --prefix apps/desktop run build && npm --prefix apps/extension run build",
-    "lint": "npm --prefix apps/desktop run lint && npm --prefix apps/extension run typecheck",
-    "test": "npm --prefix apps/desktop test && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
-    "format:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check"
+    "format:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check",
+    "lint": "npm --prefix apps/desktop run lint && npm --prefix apps/extension run lint && npm run lint:rust",
+    "lint:rust": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "typecheck": "npm --prefix apps/desktop run typecheck && npm --prefix apps/extension run typecheck",
+    "test": "npm run test:unit && npm run test:integration && npm run test:regression && npm run test:rust",
+    "test:unit": "npm --prefix apps/desktop run test:unit",
+    "test:integration": "npm --prefix apps/desktop run test:integration",
+    "test:regression": "npm --prefix apps/desktop run test:regression && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml regression_bug",
+    "test:rust": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "test:e2e": "npm --prefix apps/desktop run test:e2e",
+    "test:all": "npm test && npm run test:e2e",
+    "qa": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build:web",
+    "qa:full": "npm run qa && npm run test:e2e"
   }
 }
