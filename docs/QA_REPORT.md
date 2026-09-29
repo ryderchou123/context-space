@@ -124,14 +124,14 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 | `npm run build:web` | 成功 |
 | 擴充功能 `npm run build` | 成功（`apps/extension/dist`，manifest 0.1.1） |
 | `npm run build`（Tauri release + NSIS） | **成功**，4 分 7 秒編譯；產出 `Context Space_0.1.0_x64-setup.exe`（3.10 MiB） |
+| GitHub Actions（Windows） | **成功**：[PR #10 / CI run 36513715105](https://github.com/ryderchou123/context-space/actions/runs/36513715105)；install、format、lint、typecheck、unit、integration、regression、Rust、web/extension build、Playwright E2E、Tauri/NSIS build 全部通過 |
 
 ### 未執行的項目
 
 - **手動測試清單**：未執行。本機已有一個正在執行的 Context Space（占用 bridge port 47651）與真實資料庫；為避免修改使用者資料，沒有啟動新版執行檔。
 - **真實 Chrome / Edge 載入擴充功能**：未執行（以模擬瀏覽器測試）。
 - **真實 Win32 最小化 / WM_CLOSE**：未執行（以行程清單模擬測試決策邏輯）。
-- **GitHub labels / issues**：未建立。本機沒有 `gh` CLI；已提供 `scripts/create-github-labels.ps1` 與 `.github/ISSUE_TEMPLATE/bug_report.md`。
-- **GitHub Actions**：workflow 已撰寫，但尚未 push，所以尚未在 CI 上執行過。
+- **GitHub labels / issues**：QA 專用 labels 與 BUG-027／BUG-028 issues 尚未建立；GitHub CLI 已安裝但目前登入 token 失效。已提供 `scripts/create-github-labels.ps1` 與 `.github/ISSUE_TEMPLATE/bug_report.md`。
 
 ## 已知限制
 
