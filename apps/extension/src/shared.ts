@@ -13,14 +13,25 @@ export async function getToken(): Promise<string> {
   return typeof value === 'string' ? value : ''
 }
 
+const CLIENT_ID_KEY = 'bridgeClientId'
+export async function getClientId(): Promise<string> {
+  const existing = (await chrome.storage.local.get(CLIENT_ID_KEY))[CLIENT_ID_KEY]
+  if (typeof existing === 'string' && existing.length > 0) return existing
+  const generated = crypto.randomUUID()
+  await chrome.storage.local.set({ [CLIENT_ID_KEY]: generated })
+  const stored = (await chrome.storage.local.get(CLIENT_ID_KEY))[CLIENT_ID_KEY]
+  return typeof stored === 'string' && stored.length > 0 ? stored : generated
+}
+
 export async function api<T>(path: string, init: RequestInit = {}, timeoutMs?: number): Promise<T> {
   const token = await getToken()
+  const clientId = await getClientId()
   let response: Response
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       ...init,
       signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init.signal,
-      headers: { 'Content-Type': 'application/json', 'X-Context-Space-Token': token, ...init.headers },
+      headers: { 'Content-Type': 'application/json', 'X-Context-Space-Token': token, 'X-Context-Space-Client': clientId, ...init.headers },
     })
   } catch {
     throw new BridgeOfflineError('Context Space desktop app is not running.')

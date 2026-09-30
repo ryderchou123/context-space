@@ -70,6 +70,7 @@ export interface DebugInfo {
   activeWorkspaceName?: string
   activeWorkspaceRecovered: boolean
   extensionConnected: boolean
+  extensionClientCount: number
   extensionLastSeenSecs?: number
   databasePath: string
   databaseStatus: string

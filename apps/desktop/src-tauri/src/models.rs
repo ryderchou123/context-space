@@ -122,6 +122,7 @@ pub struct DebugInfo {
     pub active_workspace_name: Option<String>,
     pub active_workspace_recovered: bool,
     pub extension_connected: bool,
+    pub extension_client_count: usize,
     pub extension_last_seen_secs: Option<u64>,
     pub database_path: String,
     pub database_status: String,

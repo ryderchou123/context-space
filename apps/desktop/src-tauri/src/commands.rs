@@ -370,6 +370,7 @@ pub fn debug_info(state: &CoreState) -> Result<DebugInfo, String> {
         active_workspace_name: active.as_ref().map(|w| w.name.clone()),
         active_workspace_recovered: state.db.state(ACTIVE_RECOVERED)?.is_some(),
         extension_connected: state.bridge.connected(),
+        extension_client_count: state.bridge.client_count(),
         extension_last_seen_secs: state.bridge.last_seen_secs(),
         database_path: state.db.path().into(),
         database_status: match state.db.list_workspaces() {

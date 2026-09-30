@@ -5,12 +5,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io::Read,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::SyncSender,
+        mpsc::Sender,
     },
     thread,
     time::{Duration, Instant},
@@ -24,108 +24,188 @@ const COMMAND_TTL: Duration = Duration::from_secs(20);
 const CONNECTED_WINDOW: Duration = Duration::from_secs(45);
 pub const CAPTURE_TIMEOUT: Duration = Duration::from_millis(2600);
 
+struct ClientState {
+    queue: VecDeque<(Instant, BridgeCommand)>,
+    last_seen: Instant,
+}
+
+struct PendingCapture {
+    expected_clients: HashSet<String>,
+    sender: Sender<(String, Vec<SessionTab>)>,
+}
+
 pub struct BridgeState {
-    queue: Mutex<VecDeque<(Instant, BridgeCommand)>>,
+    clients: Mutex<HashMap<String, ClientState>>,
     queue_ready: Condvar,
-    pending: Mutex<HashMap<String, SyncSender<Vec<SessionTab>>>>,
-    last_seen: Mutex<Option<Instant>>,
+    pending: Mutex<HashMap<String, PendingCapture>>,
     was_connected: AtomicBool,
     events: Arc<EventLog>,
 }
 impl BridgeState {
     pub fn new(events: Arc<EventLog>) -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
+            clients: Mutex::new(HashMap::new()),
             queue_ready: Condvar::new(),
             pending: Mutex::new(HashMap::new()),
-            last_seen: Mutex::new(None),
             was_connected: AtomicBool::new(false),
             events,
         }
     }
     pub fn push(&self, cmd: BridgeCommand) {
-        if let Ok(mut q) = self.queue.lock() {
-            q.push_back((Instant::now(), cmd));
-            self.queue_ready.notify_one();
+        let clients = self.active_client_ids();
+        self.push_to_clients(&clients, cmd);
+    }
+    fn push_to_clients(&self, client_ids: &HashSet<String>, cmd: BridgeCommand) {
+        if let Ok(mut clients) = self.clients.lock() {
+            let now = Instant::now();
+            for client_id in client_ids {
+                if let Some(client) = clients.get_mut(client_id) {
+                    client.queue.push_back((now, cmd.clone()));
+                }
+            }
+            self.queue_ready.notify_all();
         }
     }
-    fn poll(&self, timeout: Duration) -> Option<BridgeCommand> {
+    fn poll(&self, client_id: &str, timeout: Duration) -> Option<BridgeCommand> {
         let deadline = Instant::now() + timeout;
-        let mut queue = self.queue.lock().ok()?;
+        let mut clients = self.clients.lock().ok()?;
         loop {
-            while let Some((queued_at, cmd)) = queue.pop_front() {
+            while let Some((queued_at, cmd)) = clients.get_mut(client_id)?.queue.pop_front() {
                 if queued_at.elapsed() <= COMMAND_TTL {
                     return Some(cmd);
                 }
-                self.events
-                    .record("BRIDGE_COMMAND_EXPIRED", format!("type={}", cmd.kind()));
+                self.events.record(
+                    "BRIDGE_COMMAND_EXPIRED",
+                    format!("type={} client={client_id}", cmd.kind()),
+                );
             }
             let remaining = deadline.checked_duration_since(Instant::now())?;
-            queue = self.queue_ready.wait_timeout(queue, remaining).ok()?.0;
-            if queue.is_empty() && Instant::now() >= deadline {
+            clients = self.queue_ready.wait_timeout(clients, remaining).ok()?.0;
+            if clients.get(client_id)?.queue.is_empty() && Instant::now() >= deadline {
                 return None;
             }
         }
     }
-    fn mark_seen(&self) {
-        if let Ok(mut seen) = self.last_seen.lock() {
-            *seen = Some(Instant::now())
+    fn mark_seen(&self, client_id: &str) {
+        if let Ok(mut clients) = self.clients.lock() {
+            clients
+                .entry(client_id.into())
+                .and_modify(|client| client.last_seen = Instant::now())
+                .or_insert_with(|| ClientState {
+                    queue: VecDeque::new(),
+                    last_seen: Instant::now(),
+                });
         }
         if !self.was_connected.swap(true, Ordering::SeqCst) {
             self.events.record("EXTENSION_CONNECTED", "");
         }
     }
-    pub fn connected(&self) -> bool {
-        let connected = self
-            .last_seen
+    fn active_client_ids(&self) -> HashSet<String> {
+        self.clients
             .lock()
-            .ok()
-            .and_then(|v| *v)
-            .is_some_and(|t| t.elapsed() < CONNECTED_WINDOW);
+            .map(|clients| {
+                clients
+                    .iter()
+                    .filter(|(_, client)| client.last_seen.elapsed() < CONNECTED_WINDOW)
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    pub fn connected(&self) -> bool {
+        let connected = !self.active_client_ids().is_empty();
         if !connected && self.was_connected.swap(false, Ordering::SeqCst) {
             self.events.record("EXTENSION_DISCONNECTED", "");
         }
         connected
     }
+    pub fn client_count(&self) -> usize {
+        self.active_client_ids().len()
+    }
     pub fn last_seen_secs(&self) -> Option<u64> {
-        self.last_seen
-            .lock()
-            .ok()
-            .and_then(|v| *v)
-            .map(|t| t.elapsed().as_secs())
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .values()
+                .map(|client| client.last_seen.elapsed().as_secs())
+                .min()
+        })
     }
     pub fn wait_for_capture(
         &self,
         workspace_id: &str,
         timeout: Duration,
     ) -> Option<Vec<SessionTab>> {
+        let expected_clients = self.active_client_ids();
+        if expected_clients.is_empty() {
+            return None;
+        }
         let request_id = uuid::Uuid::new_v4().to_string();
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        self.pending.lock().ok()?.insert(request_id.clone(), tx);
-        self.push(BridgeCommand::CaptureTabs {
-            request_id: request_id.clone(),
-            workspace_id: workspace_id.into(),
-        });
-        let result = rx.recv_timeout(timeout).ok();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending.lock().ok()?.insert(
+            request_id.clone(),
+            PendingCapture {
+                expected_clients: expected_clients.clone(),
+                sender: tx,
+            },
+        );
+        self.push_to_clients(
+            &expected_clients,
+            BridgeCommand::CaptureTabs {
+                request_id: request_id.clone(),
+                workspace_id: workspace_id.into(),
+            },
+        );
+        let deadline = Instant::now() + timeout;
+        let mut responses = BTreeMap::new();
+        while responses.len() < expected_clients.len() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match rx.recv_timeout(remaining) {
+                Ok((client_id, tabs)) if expected_clients.contains(&client_id) => {
+                    responses.entry(client_id).or_insert(tabs);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
         self.pending.lock().ok()?.remove(&request_id);
-        result
+        if responses.is_empty() {
+            return None;
+        }
+        let mut seen = HashSet::new();
+        Some(
+            responses
+                .into_values()
+                .flatten()
+                .filter(|tab| seen.insert(crate::db::url_key(&tab.url)))
+                .collect(),
+        )
     }
     #[cfg(test)]
     pub fn mark_seen_for_tests(&self) {
-        self.mark_seen()
+        self.mark_seen("test")
     }
     #[cfg(test)]
     pub fn queue_len_for_tests(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.clients
+            .lock()
+            .unwrap()
+            .values()
+            .map(|client| client.queue.len())
+            .sum()
     }
     /// Hands captured tabs to a waiting switch. Returns false when nobody is waiting.
-    fn deliver_capture(&self, request_id: &str, tabs: Vec<SessionTab>) -> bool {
-        let sender = self
-            .pending
-            .lock()
-            .ok()
-            .and_then(|mut map| map.remove(request_id));
-        sender.is_some_and(|tx| tx.send(tabs).is_ok())
+    fn deliver_capture(&self, client_id: &str, request_id: &str, tabs: Vec<SessionTab>) -> bool {
+        let sender = self.pending.lock().ok().and_then(|map| {
+            map.get(request_id).and_then(|pending| {
+                pending
+                    .expected_clients
+                    .contains(client_id)
+                    .then(|| pending.sender.clone())
+            })
+        });
+        sender.is_some_and(|tx| tx.send((client_id.into(), tabs)).is_ok())
     }
 }
 
@@ -189,6 +269,25 @@ fn token_matches(supplied: &str, expected: &str) -> bool {
             == 0
 }
 
+fn client_id(request: &Request) -> Result<String, &'static str> {
+    let value = request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("X-Context-Space-Client"))
+        .map(|header| header.value.as_str().trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("legacy");
+    if value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+    {
+        Ok(value.into())
+    } else {
+        Err("Invalid bridge client id.")
+    }
+}
+
 fn handle(mut request: Request, db: &Arc<Database>, bridge: &Arc<BridgeState>) {
     if request.method() == &Method::Options {
         return respond(request, 200, "{}");
@@ -203,7 +302,11 @@ fn handle(mut request: Request, db: &Arc<Database>, bridge: &Arc<BridgeState>) {
     if !token_matches(supplied, &expected) {
         return respond(request, 401, r#"{"error":"Invalid bridge token."}"#);
     }
-    bridge.mark_seen();
+    let client_id = match client_id(&request) {
+        Ok(value) => value,
+        Err(error) => return respond_error(request, 400, error),
+    };
+    bridge.mark_seen(&client_id);
     let path = request.url().split('?').next().unwrap_or(request.url());
     match (request.method().clone(), path) {
         (Method::Get, "/api/status") => {
@@ -227,7 +330,7 @@ fn handle(mut request: Request, db: &Arc<Database>, bridge: &Arc<BridgeState>) {
             respond(request, 200, &body)
         }
         (Method::Get, "/api/poll") => {
-            let command = bridge.poll(Duration::from_secs(25));
+            let command = bridge.poll(&client_id, Duration::from_secs(25));
             respond(
                 request,
                 200,
@@ -237,12 +340,24 @@ fn handle(mut request: Request, db: &Arc<Database>, bridge: &Arc<BridgeState>) {
         (Method::Post, "/api/capture") => match read_json::<CapturePayload>(&mut request) {
             Ok(p) => {
                 let count = p.tabs.len();
-                if bridge.deliver_capture(&p.request_id, p.tabs.clone()) {
+                if bridge.deliver_capture(&client_id, &p.request_id, p.tabs.clone()) {
                     return respond(request, 200, r#"{"ok":true}"#);
                 }
-                // The switch already timed out; keep the late capture, but never let an
-                // empty one wipe the previous session.
-                match db.save_captured_session(&p.workspace_id, &p.tabs) {
+                // The switch already timed out. Merge a late browser response with the
+                // session already saved by other clients; never let an empty response wipe it.
+                if !p
+                    .tabs
+                    .iter()
+                    .any(|tab| crate::db::parse_web_url(&tab.url).is_some())
+                {
+                    return respond(request, 200, r#"{"ok":true}"#);
+                }
+                let mut merged = db
+                    .workspace(&p.workspace_id)
+                    .map(|workspace| workspace.last_session)
+                    .unwrap_or_default();
+                merged.extend(p.tabs);
+                match db.save_captured_session(&p.workspace_id, &merged) {
                     Ok(saved) => {
                         if saved {
                             bridge.events.record(
@@ -295,7 +410,7 @@ fn respond(request: Request, status: u16, body: &str) {
         ("Access-Control-Allow-Origin", "*"),
         (
             "Access-Control-Allow-Headers",
-            "Content-Type, X-Context-Space-Token",
+            "Content-Type, X-Context-Space-Token, X-Context-Space-Client",
         ),
         ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
     ] {
@@ -329,10 +444,24 @@ pub mod tests {
 
     /// Minimal HTTP/1.1 client so the real HTTP boundary is tested, not just the structs.
     pub fn request(port: u16, method: &str, path: &str, token: &str, body: &str) -> (u16, String) {
+        request_as(port, method, path, token, None, body)
+    }
+
+    fn request_as(
+        port: u16,
+        method: &str,
+        path: &str,
+        token: &str,
+        client_id: Option<&str>,
+        body: &str,
+    ) -> (u16, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let client_header = client_id
+            .map(|id| format!("X-Context-Space-Client: {id}\r\n"))
+            .unwrap_or_default();
         write!(
             stream,
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Context-Space-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Context-Space-Token: {token}\r\n{client_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -364,6 +493,7 @@ pub mod tests {
     #[test]
     fn queued_command_wakes_long_poll_without_delay() {
         let bridge = bridge();
+        bridge.mark_seen("legacy");
         let producer = bridge.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(20));
@@ -373,43 +503,162 @@ pub mod tests {
             });
         });
         let started = Instant::now();
-        let command = bridge.poll(Duration::from_secs(1));
+        let command = bridge.poll("legacy", Duration::from_secs(1));
         assert!(started.elapsed() < Duration::from_millis(500));
         assert!(matches!(command, Some(BridgeCommand::OpenUrls { .. })));
     }
 
     #[test]
     fn empty_long_poll_times_out_cleanly() {
-        assert!(bridge().poll(Duration::from_millis(5)).is_none());
+        let bridge = bridge();
+        bridge.mark_seen("legacy");
+        assert!(bridge.poll("legacy", Duration::from_millis(5)).is_none());
     }
 
     #[test]
     fn regression_bug_004_expired_commands_are_never_delivered() {
         let bridge = bridge();
-        bridge.queue.lock().unwrap().push_back((
-            Instant::now() - COMMAND_TTL - Duration::from_secs(1),
-            BridgeCommand::CloseUrls {
-                workspace_id: "work".into(),
-                urls: vec!["https://linkedin.com".into()],
-            },
-        ));
-        assert!(bridge.poll(Duration::from_millis(10)).is_none());
-        assert_eq!(bridge.events.names(), vec!["BRIDGE_COMMAND_EXPIRED"]);
+        bridge.mark_seen("legacy");
+        bridge
+            .clients
+            .lock()
+            .unwrap()
+            .get_mut("legacy")
+            .unwrap()
+            .queue
+            .push_back((
+                Instant::now() - COMMAND_TTL - Duration::from_secs(1),
+                BridgeCommand::CloseUrls {
+                    workspace_id: "work".into(),
+                    urls: vec!["https://linkedin.com".into()],
+                },
+            ));
+        assert!(bridge.poll("legacy", Duration::from_millis(10)).is_none());
+        assert_eq!(
+            bridge.events.names(),
+            vec!["EXTENSION_CONNECTED", "BRIDGE_COMMAND_EXPIRED"]
+        );
     }
 
     #[test]
     fn connection_state_transitions_are_logged_once() {
         let bridge = bridge();
         assert!(!bridge.connected());
-        bridge.mark_seen();
-        bridge.mark_seen();
+        bridge.mark_seen("legacy");
+        bridge.mark_seen("legacy");
         assert!(bridge.connected());
-        *bridge.last_seen.lock().unwrap() = Some(Instant::now() - CONNECTED_WINDOW);
+        bridge
+            .clients
+            .lock()
+            .unwrap()
+            .get_mut("legacy")
+            .unwrap()
+            .last_seen = Instant::now() - CONNECTED_WINDOW;
         assert!(!bridge.connected());
         assert!(!bridge.connected());
         assert_eq!(
             bridge.events.names(),
             vec!["EXTENSION_CONNECTED", "EXTENSION_DISCONNECTED"]
+        );
+    }
+
+    #[test]
+    fn regression_bug_028_each_browser_client_receives_every_command() {
+        let bridge = bridge();
+        bridge.mark_seen("chrome");
+        bridge.mark_seen("edge");
+        bridge.push(BridgeCommand::OpenUrls {
+            workspace_id: "work".into(),
+            urls: vec!["https://example.com".into()],
+        });
+
+        assert!(matches!(
+            bridge.poll("chrome", Duration::from_millis(10)),
+            Some(BridgeCommand::OpenUrls { .. })
+        ));
+        assert!(matches!(
+            bridge.poll("edge", Duration::from_millis(10)),
+            Some(BridgeCommand::OpenUrls { .. })
+        ));
+    }
+
+    #[test]
+    fn regression_bug_028_http_bridge_routes_commands_by_client_header() {
+        let db = Arc::new(Database::memory());
+        let bridge = bridge();
+        let port = start_on(0, db.clone(), bridge.clone()).unwrap();
+        let token = db.state("bridge_token").unwrap().unwrap();
+        assert_eq!(
+            request_as(port, "GET", "/api/status", &token, Some("chrome"), "").0,
+            200
+        );
+        assert_eq!(
+            request_as(port, "GET", "/api/status", &token, Some("edge"), "").0,
+            200
+        );
+        assert_eq!(bridge.client_count(), 2);
+
+        bridge.push(BridgeCommand::CloseUrls {
+            workspace_id: "work".into(),
+            urls: vec!["https://example.com".into()],
+        });
+        for client in ["chrome", "edge"] {
+            let (_, body) = request_as(port, "GET", "/api/poll", &token, Some(client), "");
+            let command: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(command["type"], "close_urls");
+        }
+    }
+
+    #[test]
+    fn regression_bug_028_capture_merges_responses_from_chrome_and_edge() {
+        let bridge = bridge();
+        bridge.mark_seen("chrome");
+        bridge.mark_seen("edge");
+        let waiter = {
+            let bridge = bridge.clone();
+            thread::spawn(move || bridge.wait_for_capture("work", Duration::from_secs(1)))
+        };
+
+        let chrome_command = bridge.poll("chrome", Duration::from_secs(1)).unwrap();
+        let edge_command = bridge.poll("edge", Duration::from_secs(1)).unwrap();
+        let request_id = match chrome_command {
+            BridgeCommand::CaptureTabs { request_id, .. } => request_id,
+            _ => panic!("expected capture command"),
+        };
+        assert!(matches!(
+            edge_command,
+            BridgeCommand::CaptureTabs {
+                request_id: ref edge_request,
+                ..
+            } if edge_request == &request_id
+        ));
+        assert!(bridge.deliver_capture(
+            "chrome",
+            &request_id,
+            vec![SessionTab {
+                title: "A".into(),
+                url: "https://a.test".into(),
+            }],
+        ));
+        assert!(bridge.deliver_capture(
+            "edge",
+            &request_id,
+            vec![
+                SessionTab {
+                    title: "A duplicate".into(),
+                    url: "https://a.test/".into(),
+                },
+                SessionTab {
+                    title: "B".into(),
+                    url: "https://b.test".into(),
+                },
+            ],
+        ));
+
+        let tabs = waiter.join().unwrap().unwrap();
+        assert_eq!(
+            tabs.iter().map(|tab| tab.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://a.test", "https://b.test"]
         );
     }
 
@@ -448,6 +697,9 @@ pub mod tests {
         let (status, body) = request(port, "POST", "/api/capture", &token, "{not json");
         assert_eq!(status, 400);
         assert!(body.contains("error"));
+
+        let (status, _) = request_as(port, "GET", "/api/status", &token, Some("bad client!"), "");
+        assert_eq!(status, 400);
     }
 
     #[test]
@@ -457,6 +709,7 @@ pub mod tests {
         let bridge = bridge();
         let port = start_on(0, db.clone(), bridge.clone()).unwrap();
         let token = db.state("bridge_token").unwrap().unwrap();
+        request(port, "GET", "/api/status", &token, "");
 
         let waiter = {
             let (bridge, work) = (bridge.clone(), work.clone());
@@ -496,6 +749,21 @@ pub mod tests {
             200
         );
         assert_eq!(db.workspace(&work).unwrap().last_session.len(), 1);
+        let edge = serde_json::json!({ "requestId": "expired", "workspaceId": work,
+            "tabs": [{ "title": "B", "url": "https://b.test" }] });
+        assert_eq!(
+            request_as(
+                port,
+                "POST",
+                "/api/capture",
+                &token,
+                Some("edge"),
+                &edge.to_string()
+            )
+            .0,
+            200
+        );
+        assert_eq!(db.workspace(&work).unwrap().last_session.len(), 2);
     }
 
     #[test]

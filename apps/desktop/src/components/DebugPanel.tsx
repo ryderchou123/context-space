@@ -20,7 +20,7 @@ export function DebugPanel({ onClose }: { onClose: () => void }) {
 
   const rows: [string, string][] = info ? [
     ['Active workspace', info.activeWorkspaceName ? `${info.activeWorkspaceName}${info.activeWorkspaceRecovered ? ' (recovered after restart)' : ''}` : 'None'],
-    ['Extension', info.extensionConnected ? `Connected (seen ${info.extensionLastSeenSecs ?? 0}s ago)` : 'Not connected'],
+    ['Extension', info.extensionConnected ? `Connected: ${info.extensionClientCount} client${info.extensionClientCount === 1 ? '' : 's'} (seen ${info.extensionLastSeenSecs ?? 0}s ago)` : 'Not connected'],
     ['Database', `${info.databaseStatus} · schema v${info.schemaVersion}`],
     ['Database file', info.databasePath],
     ['Last Session tabs', String(info.lastSessionTabs)],

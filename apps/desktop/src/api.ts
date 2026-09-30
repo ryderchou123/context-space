@@ -120,6 +120,6 @@ export const desktopApi = {
     if (isTauri) return invoke('get_debug_info')
     const snapshot = readDemo()
     const active = snapshot.workspaces.find((item) => item.id === snapshot.activeWorkspaceId)
-    return { activeWorkspaceId: active?.id, activeWorkspaceName: active?.name, activeWorkspaceRecovered: false, extensionConnected: false, databasePath: `browser localStorage (${DEMO_KEY})`, databaseStatus: `ok (${snapshot.workspaces.length} workspaces)`, schemaVersion: 0, lastSessionTabs: active?.lastSession.length ?? 0, trackedApps: active?.appResources.map((app) => ({ displayName: app.displayName, running: false })) ?? [], recentEvents: [] }
+    return { activeWorkspaceId: active?.id, activeWorkspaceName: active?.name, activeWorkspaceRecovered: false, extensionConnected: false, extensionClientCount: 0, databasePath: `browser localStorage (${DEMO_KEY})`, databaseStatus: `ok (${snapshot.workspaces.length} workspaces)`, schemaVersion: 0, lastSessionTabs: active?.lastSession.length ?? 0, trackedApps: active?.appResources.map((app) => ({ displayName: app.displayName, running: false })) ?? [], recentEvents: [] }
   },
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BridgeAuthError, BridgeOfflineError, api, getTabOwners } from '../../../extension/src/shared'
+import { BridgeAuthError, BridgeOfflineError, api, getClientId, getTabOwners } from '../../../extension/src/shared'
 import { closeUrls, handleCommand, onTabCreated, onTabRemoved, onTabReplaced, openUrls, resetActiveCacheForTests } from '../../../extension/src/tabs'
 import { installFakeChrome, stubBridge } from '../helpers/fake-chrome'
 
@@ -92,9 +92,16 @@ describe('extension tab service', () => {
     await expect(api('/api/status')).rejects.toBeInstanceOf(BridgeAuthError)
   })
 
-  it('sends the bridge token with every request', async () => {
+  it('sends the bridge token and a stable per-installation client id with every request', async () => {
     const { fetchMock } = stubBridge({ 'GET /api/status': { workspaces: [] } })
     await api('/api/status')
-    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ 'X-Context-Space-Token': 'token' })
+    await api('/api/status')
+    const clientId = await getClientId()
+    expect(clientId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      'X-Context-Space-Token': 'token',
+      'X-Context-Space-Client': clientId,
+    })
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ 'X-Context-Space-Client': clientId })
   })
 })
