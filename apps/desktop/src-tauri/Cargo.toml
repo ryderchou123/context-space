@@ -31,6 +31,6 @@ chrono = { version = "0.4", features = ["serde"] }
 tiny_http = "0.12"
 url = "2"
 sysinfo = "0.37"
-shlex = "1"
+tauri-plugin-single-instance = "2"
 open = "5"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }

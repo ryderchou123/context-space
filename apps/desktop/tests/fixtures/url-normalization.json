@@ -1,0 +1,33 @@
+{
+  "description": "Single source of truth for URL identity. Rust (db.rs), the desktop UI (core.ts) and the extension (shared.ts) must all produce these outputs. Scheme, www, path case and query stay significant; fragment, default port and a trailing slash without a query are dropped.",
+  "cases": [
+    { "input": "https://linkedin.com", "expected": "https://linkedin.com" },
+    { "input": "https://linkedin.com/", "expected": "https://linkedin.com" },
+    { "input": "https://LinkedIn.com/", "expected": "https://linkedin.com" },
+    { "input": "https://linkedin.com:443/", "expected": "https://linkedin.com" },
+    { "input": "http://linkedin.com:80/", "expected": "http://linkedin.com" },
+    { "input": "https://linkedin.com:8443/", "expected": "https://linkedin.com:8443" },
+    { "input": "https://linkedin.com/#top", "expected": "https://linkedin.com" },
+    { "input": "https://linkedin.com/jobs", "expected": "https://linkedin.com/jobs" },
+    { "input": "https://linkedin.com/jobs/", "expected": "https://linkedin.com/jobs" },
+    { "input": "https://linkedin.com/jobs#saved", "expected": "https://linkedin.com/jobs" },
+    { "input": "https://linkedin.com/Jobs", "expected": "https://linkedin.com/Jobs" },
+    { "input": "https://linkedin.com/jobs?q=rust", "expected": "https://linkedin.com/jobs?q=rust" },
+    { "input": "https://linkedin.com/jobs/?q=rust", "expected": "https://linkedin.com/jobs/?q=rust" },
+    { "input": "https://linkedin.com/?q=1#x", "expected": "https://linkedin.com/?q=1" },
+    { "input": "https://linkedin.com/login?next=/feed/", "expected": "https://linkedin.com/login?next=/feed/" },
+    { "input": "http://linkedin.com", "expected": "http://linkedin.com" },
+    { "input": "https://www.linkedin.com", "expected": "https://www.linkedin.com" },
+    { "input": "https://linkedin.com/messages", "expected": "https://linkedin.com/messages" }
+  ],
+  "distinct": [
+    ["https://linkedin.com", "http://linkedin.com"],
+    ["https://linkedin.com", "https://www.linkedin.com"],
+    ["https://linkedin.com", "https://linkedin.com/jobs"],
+    ["https://linkedin.com/jobs", "https://linkedin.com/messages"],
+    ["https://linkedin.com/jobs", "https://linkedin.com/jobs?q=1"],
+    ["https://linkedin.com/jobs", "https://linkedin.com/Jobs"],
+    ["https://linkedin.com", "https://twitch.tv"]
+  ],
+  "rejected": ["ftp://example.com", "javascript:alert(1)", "file:///C:/Windows", "chrome://settings", "not a url"]
+}

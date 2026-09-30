@@ -69,6 +69,7 @@ pub struct WorkspaceDraft {
 pub struct AppSnapshot {
     pub workspaces: Vec<Workspace>,
     pub active_workspace_id: Option<String>,
+    pub active_workspace_recovered: bool,
     pub extension_connected: bool,
     pub bridge_token: String,
     pub bridge_port: u16,
@@ -88,9 +89,46 @@ pub enum BridgeCommand {
         workspace_id: String,
     },
     OpenUrls {
+        workspace_id: String,
         urls: Vec<String>,
     },
     CloseUrls {
+        workspace_id: String,
         urls: Vec<String>,
     },
+}
+
+impl BridgeCommand {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::CaptureTabs { .. } => "capture_tabs",
+            Self::OpenUrls { .. } => "open_urls",
+            Self::CloseUrls { .. } => "close_urls",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedApp {
+    pub display_name: String,
+    pub running: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugInfo {
+    pub active_workspace_id: Option<String>,
+    pub active_workspace_name: Option<String>,
+    pub active_workspace_recovered: bool,
+    pub extension_connected: bool,
+    pub extension_client_count: usize,
+    pub extension_last_seen_secs: Option<u64>,
+    pub database_path: String,
+    pub database_status: String,
+    pub schema_version: i64,
+    pub last_session_tabs: usize,
+    pub tracked_apps: Vec<TrackedApp>,
+    pub last_transition: Option<crate::events::LogEntry>,
+    pub recent_events: Vec<crate::events::LogEntry>,
 }

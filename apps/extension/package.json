@@ -3,6 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "scripts": { "build": "tsc && node scripts/build.mjs", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "@types/chrome": "^0.1.31", "typescript": "~6.0.2" }
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings src"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.31",
+    "oxlint": "^1.86.0",
+    "typescript": "~6.0.2"
+  }
 }

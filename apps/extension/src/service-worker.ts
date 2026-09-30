@@ -1,11 +1,25 @@
-import { api, normalize, supportedTab, type TabInfo } from './shared.js'
-type Command = { type: 'capture_tabs'; request_id: string; workspace_id: string } | { type: 'open_urls'; urls: string[] } | { type: 'close_urls'; urls: string[] }
-async function poll() { try { const command = await api<Command | null>('/api/poll'); if (!command) return; if (command.type === 'capture_tabs') { const tabs = (await chrome.tabs.query({})).filter(supportedTab).map(tabInfo); await api('/api/capture', { method: 'POST', body: JSON.stringify({ requestId: command.request_id, workspaceId: command.workspace_id, tabs }) }) } else if (command.type === 'open_urls') await openUrls(command.urls); else if (command.type === 'close_urls') await closeUrls(command.urls) } catch { /* desktop app may be closed */ } }
-function tabInfo(tab: chrome.tabs.Tab & { url: string }): TabInfo { return { title: tab.title || new URL(tab.url).hostname, url: tab.url } }
-async function openUrls(urls: string[]) { const tabs = (await chrome.tabs.query({})).filter(supportedTab); const existing = new Map(tabs.map(t => [normalize(t.url), t])); for (const url of urls) { const tab = existing.get(normalize(url)); if (tab?.id) { await chrome.tabs.update(tab.id, { active: true }); if (tab.windowId) await chrome.windows.update(tab.windowId, { focused: true }); } else await chrome.tabs.create({ url, active: false }) } }
-async function closeUrls(urls: string[]) { const wanted = new Set(urls.map(normalize)); const ids = (await chrome.tabs.query({})).filter(supportedTab).filter(t => wanted.has(normalize(t.url))).flatMap(t => t.id === undefined ? [] : [t.id]); if (ids.length) await chrome.tabs.remove(ids) }
-chrome.runtime.onInstalled.addListener(() => chrome.alarms.create('bridge-poll', { periodInMinutes: .5 }))
-chrome.runtime.onStartup.addListener(() => chrome.alarms.create('bridge-poll', { periodInMinutes: .5 }))
-chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'bridge-poll') void poll() })
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => { if (message === 'poll') void poll().then(() => sendResponse({ ok: true })); return true })
-void poll()
+import { api, dropLegacyOwners } from './shared.js'
+import { handleCommand, onTabCreated, onTabRemoved, onTabReplaced, type Command } from './tabs.js'
+
+let polling = false
+async function pollOnce() {
+  const command = await api<Command | null>('/api/poll?wait=25')
+  if (command) await handleCommand(command)
+}
+async function startPolling() {
+  if (polling) return
+  polling = true
+  try {
+    for (let attempt = 0; attempt < 12; attempt += 1) await pollOnce()
+  } catch { /* desktop app may be closed; the alarm retries every 30 seconds */ }
+  finally { polling = false }
+}
+function schedule() { void chrome.alarms.create('bridge-poll', { periodInMinutes: .5 }) }
+chrome.runtime.onInstalled.addListener(() => { schedule(); void dropLegacyOwners() })
+chrome.runtime.onStartup.addListener(schedule)
+chrome.tabs.onCreated.addListener(tab => { void onTabCreated(tab) })
+chrome.tabs.onReplaced.addListener((added, removed) => { void onTabReplaced(added, removed) })
+chrome.tabs.onRemoved.addListener(tabId => { void onTabRemoved(tabId) })
+chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'bridge-poll') void startPolling() })
+chrome.runtime.onMessage.addListener((message) => { if (message === 'poll') void startPolling(); return false })
+void startPolling()

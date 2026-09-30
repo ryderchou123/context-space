@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Context Space",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Save, switch, and restore local browser workspace tabs.",
   "permissions": ["tabs", "storage", "alarms"],
   "host_permissions": ["http://127.0.0.1:47651/*"],

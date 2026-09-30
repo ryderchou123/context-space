@@ -1,99 +1,250 @@
-use crate::models::AppResource;
-use std::{path::Path, process::Command};
-use sysinfo::System;
+use crate::{events::EventLog, models::AppResource};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    process::Command,
+};
+use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
-pub fn launch_apps(apps: &[AppResource]) -> Vec<String> {
-    let mut warnings = vec![];
-    for app in apps.iter().filter(|a| a.enabled) {
-        if !Path::new(&app.executable_path).exists() {
-            warnings.push(format!(
-                "{} was skipped because its executable is missing.",
-                app.display_name
-            ));
-            continue;
-        }
-        if !process_ids(app).is_empty() {
-            continue;
-        }
-        let mut command = Command::new(&app.executable_path);
-        if let Some(args) = shlex::split(&app.launch_args) {
-            command.args(args);
-        }
-        match command.spawn() {
-            Ok(_) => {}
-            Err(e) => warnings.push(format!("Could not open {}: {e}", app.display_name)),
-        }
-    }
-    warnings
+/// Closing a browser window closes every tab in it, including other workspaces' tabs.
+const BROWSER_PROCESSES: &[&str] = &[
+    "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc", "iexplore",
+];
+
+#[derive(Debug, Clone)]
+pub struct RunningProcess {
+    pub pid: u32,
+    pub name: String,
+    pub exe: Option<PathBuf>,
 }
 
-pub fn apply_exit(apps: &[AppResource], default_behavior: &str) -> Vec<String> {
-    let mut warnings = vec![];
-    for app in apps.iter().filter(|a| a.enabled) {
-        let behavior = app
-            .exit_behavior_override
-            .as_deref()
-            .unwrap_or(default_behavior);
-        if behavior == "keep" {
-            continue;
-        }
-        for pid in process_ids(app) {
-            if let Err(e) = window_action(pid, behavior == "safe_close") {
-                warnings.push(format!(
-                    "Could not {} {}: {e}",
-                    if behavior == "safe_close" {
-                        "close"
-                    } else {
-                        "minimize"
-                    },
-                    app.display_name
-                ));
-            }
-        }
-    }
-    warnings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitAction {
+    Minimize,
+    SafeClose,
 }
 
-fn process_ids(app: &AppResource) -> Vec<u32> {
-    let mut system = System::new_all();
-    system.refresh_all();
-    let wanted_name = app.process_name.trim_end_matches(".exe");
-    let wanted_path = Path::new(&app.executable_path);
+#[derive(Debug)]
+pub struct ExitStep<'a> {
+    pub app: &'a AppResource,
+    pub pids: HashSet<u32>,
+    pub action: ExitAction,
+    pub note: Option<String>,
+}
+
+/// One process snapshot per operation; refreshing everything per app took seconds.
+pub fn running_processes() -> Vec<RunningProcess> {
+    let system = System::new_with_specifics(
+        RefreshKind::nothing()
+            .with_processes(ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet)),
+    );
     system
         .processes()
         .values()
-        .filter(|p| {
-            let name = p.name().to_string_lossy();
-            let name_match = !wanted_name.is_empty()
-                && name
-                    .trim_end_matches(".exe")
-                    .eq_ignore_ascii_case(wanted_name);
-            let path_match = p.exe().is_some_and(|p| same_path(p, wanted_path));
-            name_match || path_match
+        .map(|p| RunningProcess {
+            pid: p.pid().as_u32(),
+            name: p.name().to_string_lossy().into_owned(),
+            exe: p.exe().map(Path::to_path_buf),
         })
-        .map(|p| p.pid().as_u32())
         .collect()
+}
+
+fn process_key(name: &str) -> String {
+    let lower = name.trim().to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
 fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str()
         .to_string_lossy()
         .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
 }
+fn app_process_key(app: &AppResource) -> String {
+    let explicit = process_key(&app.process_name);
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    Path::new(&app.executable_path)
+        .file_name()
+        .map(|f| process_key(&f.to_string_lossy()))
+        .unwrap_or_default()
+}
+
+/// Two resources refer to the same program when their executable or process name match.
+pub fn same_app(a: &AppResource, b: &AppResource) -> bool {
+    same_path(Path::new(&a.executable_path), Path::new(&b.executable_path))
+        || (!app_process_key(a).is_empty() && app_process_key(a) == app_process_key(b))
+}
+
+pub fn is_browser(app: &AppResource) -> bool {
+    BROWSER_PROCESSES.contains(&app_process_key(app).as_str())
+}
+
+pub fn pids_for(app: &AppResource, table: &[RunningProcess]) -> HashSet<u32> {
+    let wanted_name = app_process_key(app);
+    let wanted_path = Path::new(&app.executable_path);
+    let own_pid = std::process::id();
+    table
+        .iter()
+        .filter(|p| p.pid != own_pid)
+        .filter(|p| {
+            (!wanted_name.is_empty() && process_key(&p.name) == wanted_name)
+                || p.exe.as_deref().is_some_and(|e| same_path(e, wanted_path))
+        })
+        .map(|p| p.pid)
+        .collect()
+}
+
+/// Splits launch arguments the Windows way: whitespace separates, double quotes group,
+/// and backslashes are literal so `C:\Users\me` survives (POSIX shlex dropped them).
+pub fn split_args(input: &str) -> Vec<String> {
+    let mut args = vec![];
+    let mut current = String::new();
+    let (mut quoted, mut pending) = (false, false);
+    for c in input.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                pending = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if pending {
+                    args.push(std::mem::take(&mut current));
+                    pending = false;
+                }
+            }
+            c => {
+                current.push(c);
+                pending = true;
+            }
+        }
+    }
+    if pending {
+        args.push(current);
+    }
+    args
+}
+
+pub fn plan_launch<'a>(
+    apps: &'a [AppResource],
+    table: &[RunningProcess],
+    exists: impl Fn(&Path) -> bool,
+) -> (Vec<&'a AppResource>, Vec<String>) {
+    let mut launch: Vec<&AppResource> = vec![];
+    let mut warnings = vec![];
+    for app in apps.iter().filter(|a| a.enabled) {
+        if !exists(Path::new(&app.executable_path)) {
+            warnings.push(format!(
+                "{} was skipped because its executable is missing or was moved.",
+                app.display_name
+            ));
+        } else if pids_for(app, table).is_empty() && !launch.iter().any(|l| same_app(l, app)) {
+            launch.push(app);
+        }
+    }
+    (launch, warnings)
+}
+
+pub fn launch_apps(apps: &[AppResource], events: &EventLog) -> Vec<String> {
+    let (launch, mut warnings) = plan_launch(apps, &running_processes(), Path::is_file);
+    for app in launch {
+        let path = Path::new(&app.executable_path);
+        let mut command = Command::new(path);
+        command.args(split_args(&app.launch_args));
+        if let Some(dir) = path.parent() {
+            command.current_dir(dir);
+        }
+        match command.spawn() {
+            Ok(_) => events.record("APP_LAUNCH", format!("app={}", app.display_name)),
+            Err(e) => warnings.push(format!("Could not open {}: {e}", app.display_name)),
+        }
+    }
+    warnings
+}
+
+pub fn plan_exit<'a>(
+    apps: &'a [AppResource],
+    default_behavior: &str,
+    keep: &[AppResource],
+    table: &[RunningProcess],
+) -> Vec<ExitStep<'a>> {
+    apps.iter()
+        .filter(|a| a.enabled)
+        // Apps the next workspace also uses stay untouched instead of closing and relaunching.
+        .filter(|a| !keep.iter().any(|k| k.enabled && same_app(a, k)))
+        .filter_map(|app| {
+            let behavior = app
+                .exit_behavior_override
+                .as_deref()
+                .unwrap_or(default_behavior);
+            let (action, note) = match behavior {
+                "minimize" => (ExitAction::Minimize, None),
+                "safe_close" if is_browser(app) => (
+                    ExitAction::Minimize,
+                    Some(format!(
+                        "{} is a web browser, so it was minimized instead of closed to protect tabs from other workspaces.",
+                        app.display_name
+                    )),
+                ),
+                "safe_close" => (ExitAction::SafeClose, None),
+                _ => return None,
+            };
+            let pids = pids_for(app, table);
+            (!pids.is_empty()).then_some(ExitStep {
+                app,
+                pids,
+                action,
+                note,
+            })
+        })
+        .collect()
+}
+
+/// Minimizes or politely asks apps to close (WM_CLOSE, so unsaved-work prompts still
+/// appear). Never terminates a process.
+pub fn apply_exit(
+    apps: &[AppResource],
+    default_behavior: &str,
+    keep: &[AppResource],
+    events: &EventLog,
+) -> Vec<String> {
+    let table = running_processes();
+    let mut warnings = vec![];
+    for step in plan_exit(apps, default_behavior, keep, &table) {
+        warnings.extend(step.note.clone());
+        let name = &step.app.display_name;
+        let closed = step.action == ExitAction::SafeClose;
+        match window_action(&step.pids, closed) {
+            Ok(count) => events.record(
+                if closed {
+                    "APP_SAFE_CLOSE"
+                } else {
+                    "APP_MINIMIZE"
+                },
+                format!("app={name} windows={count}"),
+            ),
+            Err(e) => warnings.push(format!(
+                "Could not {} {name}: {e}. It was left running.",
+                if closed { "close" } else { "minimize" }
+            )),
+        }
+    }
+    warnings
+}
 
 #[cfg(target_os = "windows")]
-fn window_action(pid: u32, close: bool) -> Result<(), String> {
+fn window_action(pids: &HashSet<u32>, close: bool) -> Result<u32, String> {
     use windows::{
         Win32::{
             Foundation::{HWND, LPARAM, WPARAM},
             UI::WindowsAndMessaging::{
-                EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SW_MINIMIZE,
-                ShowWindow, WM_CLOSE,
+                EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsWindowVisible,
+                PostMessageW, SW_MINIMIZE, ShowWindow, WM_CLOSE,
             },
         },
         core::BOOL,
     };
-    struct Data {
-        pid: u32,
+    struct Data<'a> {
+        pids: &'a HashSet<u32>,
         close: bool,
         count: u32,
     }
@@ -103,7 +254,13 @@ fn window_action(pid: u32, close: bool) -> Result<(), String> {
         unsafe {
             GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
         }
-        if window_pid == data.pid && unsafe { IsWindowVisible(hwnd).as_bool() } {
+        // Only visible, unowned top-level windows: dialogs close with their owner.
+        let top_level =
+            !matches!(unsafe { GetWindow(hwnd, GW_OWNER) }, Ok(owner) if !owner.is_invalid());
+        if data.pids.contains(&window_pid)
+            && top_level
+            && unsafe { IsWindowVisible(hwnd).as_bool() }
+        {
             if data.close {
                 let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
             } else {
@@ -114,7 +271,7 @@ fn window_action(pid: u32, close: bool) -> Result<(), String> {
         BOOL(1)
     }
     let mut data = Data {
-        pid,
+        pids,
         close,
         count: 0,
     };
@@ -123,12 +280,243 @@ fn window_action(pid: u32, close: bool) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if data.count == 0 {
-        Err("no visible top-level window was found".into())
+        Err("no visible window was found".into())
     } else {
-        Ok(())
+        Ok(data.count)
     }
 }
 #[cfg(not(target_os = "windows"))]
-fn window_action(_pid: u32, _close: bool) -> Result<(), String> {
+fn window_action(_pids: &HashSet<u32>, _close: bool) -> Result<u32, String> {
     Err("Windows integration is only available on Windows.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(name: &str, exe: &str, process: &str) -> AppResource {
+        AppResource {
+            id: name.into(),
+            workspace_id: "w".into(),
+            display_name: name.into(),
+            executable_path: exe.into(),
+            process_name: process.into(),
+            launch_args: String::new(),
+            enabled: true,
+            exit_behavior_override: None,
+        }
+    }
+    fn proc(pid: u32, name: &str, exe: &str) -> RunningProcess {
+        RunningProcess {
+            pid,
+            name: name.into(),
+            exe: Some(exe.into()),
+        }
+    }
+    fn table() -> Vec<RunningProcess> {
+        vec![
+            proc(10, "Code.exe", r"C:\VSCode\Code.exe"),
+            proc(11, "Code.exe", r"C:\VSCode\Code.exe"),
+            proc(20, "Discord.exe", r"C:\Discord\app\Discord.exe"),
+            proc(30, "chrome.exe", r"C:\Chrome\chrome.exe"),
+            proc(40, "Spotify.exe", r"C:\Spotify\Spotify.exe"),
+            proc(50, "WindowsTerminal.exe", r"C:\WT\WindowsTerminal.exe"),
+        ]
+    }
+
+    #[test]
+    fn regression_bug_018_windows_paths_in_arguments_keep_backslashes() {
+        assert_eq!(
+            split_args(r#"--user-data-dir C:\Users\me\Profile "C:\Program Files\x" --flag="" "#),
+            vec![
+                "--user-data-dir",
+                r"C:\Users\me\Profile",
+                r"C:\Program Files\x",
+                "--flag="
+            ]
+        );
+        assert!(split_args("   ").is_empty());
+        assert_eq!(split_args(r#""""#), vec![""]);
+    }
+
+    #[test]
+    fn process_detection_matches_name_or_path_case_insensitively() {
+        let code = app("VS Code", r"c:\vscode\code.exe", "");
+        assert_eq!(pids_for(&code, &table()), HashSet::from([10, 11]));
+        let by_name = app("Discord", r"C:\Discord\Update.exe", "discord.exe");
+        assert_eq!(pids_for(&by_name, &table()), HashSet::from([20]));
+        assert!(pids_for(&app("Steam", r"C:\Steam\steam.exe", "steam"), &table()).is_empty());
+    }
+
+    #[test]
+    fn launch_skips_running_missing_disabled_and_duplicate_apps() {
+        let mut disabled = app("Disabled", r"C:\Tools\a.exe", "");
+        disabled.enabled = false;
+        let apps = vec![
+            app("VS Code", r"C:\VSCode\Code.exe", "Code"),
+            app("Steam", r"C:\Steam\steam.exe", "steam"),
+            app("Steam again", r"C:\Steam\steam.exe", "steam"),
+            app("Moved", r"C:\Old\moved.exe", ""),
+            disabled,
+        ];
+        let (launch, warnings) = plan_launch(&apps, &table(), |p| !p.ends_with("moved.exe"));
+        assert_eq!(
+            launch
+                .iter()
+                .map(|a| a.display_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Steam"]
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Moved"));
+    }
+
+    #[test]
+    fn keep_running_does_nothing_and_minimize_targets_all_app_processes() {
+        let apps = vec![app("VS Code", r"C:\VSCode\Code.exe", "Code")];
+        assert!(plan_exit(&apps, "keep", &[], &table()).is_empty());
+        let steps = plan_exit(&apps, "minimize", &[], &table());
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].action, ExitAction::Minimize);
+        assert_eq!(steps[0].pids, HashSet::from([10, 11]));
+    }
+
+    #[test]
+    fn per_app_override_wins_and_unknown_behaviors_do_nothing() {
+        let mut spotify = app("Spotify", r"C:\Spotify\Spotify.exe", "");
+        spotify.exit_behavior_override = Some("keep".into());
+        let mut terminal = app("Terminal", r"C:\WT\WindowsTerminal.exe", "");
+        terminal.exit_behavior_override = Some("kill".into());
+        assert!(plan_exit(&[spotify, terminal], "safe_close", &[], &table()).is_empty());
+    }
+
+    #[test]
+    fn regression_bug_007_browsers_are_never_safe_closed() {
+        let apps = vec![
+            app("Chrome", r"C:\Chrome\chrome.exe", ""),
+            app("Discord", r"C:\Discord\app\Discord.exe", ""),
+        ];
+        let steps = plan_exit(&apps, "safe_close", &[], &table());
+        assert_eq!(steps[0].action, ExitAction::Minimize);
+        assert!(steps[0].note.as_deref().unwrap().contains("web browser"));
+        assert_eq!(steps[1].action, ExitAction::SafeClose);
+    }
+
+    #[test]
+    fn regression_bug_006_apps_shared_with_the_next_workspace_are_left_alone() {
+        let work = vec![
+            app("Discord", r"C:\Discord\app\Discord.exe", ""),
+            app("VS Code", r"C:\VSCode\Code.exe", ""),
+        ];
+        let games = vec![app("Discord (games)", r"c:\discord\app\discord.exe", "")];
+        let steps = plan_exit(&work, "safe_close", &games, &table());
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].app.display_name, "VS Code");
+    }
+
+    #[test]
+    fn apps_that_are_not_running_produce_no_action_or_warning() {
+        let apps = vec![app("Steam", r"C:\Steam\steam.exe", "")];
+        assert!(plan_exit(&apps, "minimize", &[], &table()).is_empty());
+    }
+
+    #[test]
+    fn own_process_is_never_targeted() {
+        let me = std::process::id();
+        let table = vec![proc(me, "app.exe", r"C:\ContextSpace\app.exe")];
+        let own = app("Context Space", r"C:\ContextSpace\app.exe", "");
+        assert!(pids_for(&own, &table).is_empty());
+    }
+
+    /// Manual Windows integration check. It creates a disposable native window in this
+    /// test process, then exercises the production minimize/WM_CLOSE path. No user
+    /// process is discovered, opened, or terminated.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn win32_minimize_and_safe_close_real_window() {
+        use std::{
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+        use windows::{
+            Win32::{
+                Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+                UI::WindowsAndMessaging::{
+                    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+                    DispatchMessageW, GetMessageW, IsIconic, IsWindow, MSG, PostQuitMessage,
+                    RegisterClassW, SW_RESTORE, SW_SHOW, ShowWindow, TranslateMessage,
+                    WINDOW_EX_STYLE, WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                },
+            },
+            core::w,
+        };
+
+        unsafe extern "system" fn window_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if message == WM_DESTROY {
+                unsafe { PostQuitMessage(0) };
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let window_thread = thread::spawn(move || unsafe {
+            let class_name = w!("ContextSpaceWin32IntegrationTest");
+            let class = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(window_proc),
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                w!("Context Space Win32 integration test"),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                480,
+                320,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("test window should be created");
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            sender.send(hwnd.0 as isize).unwrap();
+
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        });
+
+        let hwnd = HWND(receiver.recv_timeout(Duration::from_secs(5)).unwrap() as *mut _);
+        let pids = HashSet::from([std::process::id()]);
+        assert_eq!(window_action(&pids, false), Ok(1));
+        let minimize_deadline = Instant::now() + Duration::from_secs(5);
+        while !unsafe { IsIconic(hwnd).as_bool() } && Instant::now() < minimize_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(unsafe { IsIconic(hwnd).as_bool() });
+
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        assert_eq!(window_action(&pids, true), Ok(1));
+        let close_deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { IsWindow(Some(hwnd)).as_bool() } && Instant::now() < close_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!unsafe { IsWindow(Some(hwnd)).as_bool() });
+        window_thread.join().unwrap();
+    }
 }
