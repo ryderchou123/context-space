@@ -108,3 +108,13 @@
 
 - [ ] `docs/QA_REPORT.md` 已更新本次結果
 - [ ] Critical = 0，未解決的 High regression = 0
+
+## 2026-09-29 執行狀態
+
+- [x] 測試前建立 live SQLite 備份，測試後以 SHA-256 驗證還原完成。
+- [x] 真實 Tauri WebView 的 Workspace CRUD、輸入驗證、資源新增、主題 persistence、Debug database status 與 BUG-014 編輯器穩定性。
+- [x] 真實 Edge unpacked MV3 載入、bridge 驗證與 popup `Desktop connected`。
+- [x] 一次性 Win32 測試視窗的 minimize、程序存活與 `WM_CLOSE`。
+- [ ] 真實 Edge 完整 Workspace open/capture/close/restore/restart（互動式桌面目前不可用）。
+- [ ] Tray menu、tray switch、single-instance focus 與原生 resize（原生 UI automation 目前不可用）。
+- [ ] 真實 Tauri restart recovery（需 VM、獨立 Windows 使用者，或可真正隔離 Known Folder 的測試環境）。

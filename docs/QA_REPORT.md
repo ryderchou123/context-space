@@ -126,16 +126,16 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 | `npm run build`（Tauri release + NSIS） | **成功**，4 分 7 秒編譯；產出 `Context Space_0.1.0_x64-setup.exe`（3.10 MiB） |
 | GitHub Actions（Windows） | **成功**：[PR #10 / CI run 36513715105](https://github.com/ryderchou123/context-space/actions/runs/36513715105)；install、format、lint、typecheck、unit、integration、regression、Rust、web/extension build、Playwright E2E、Tauri/NSIS build 全部通過 |
 
-### 未執行的項目
+### 原穩定化階段尚未執行的項目（後續結果見 2026-09-29 補充）
 
-- **手動測試清單**：未執行。本機已有一個正在執行的 Context Space（占用 bridge port 47651）與真實資料庫；為避免修改使用者資料，沒有啟動新版執行檔。
-- **真實 Chrome / Edge 載入擴充功能**：未執行（以模擬瀏覽器測試）。
-- **真實 Win32 最小化 / WM_CLOSE**：未執行（以行程清單模擬測試決策邏輯）。
+- **手動測試清單**：在原穩定化階段未執行；2026-09-29 已完成下方列出的安全子集，但完整清單仍未完成。
+- **真實 Chrome / Edge 載入擴充功能**：原階段未執行；2026-09-29 已驗證 Edge 載入、bridge 驗證與 popup，完整 tab lifecycle 仍未完成。
+- **真實 Win32 最小化 / WM_CLOSE**：原階段未執行；2026-09-29 已使用一次性原生測試視窗驗證通過。
 - **GitHub labels / issues**：QA 專用 labels 與 BUG-027／BUG-028 issues 尚未建立；GitHub CLI 已安裝但目前登入 token 失效。已提供 `scripts/create-github-labels.ps1` 與 `.github/ISSUE_TEMPLATE/bug_report.md`。
 
 ## 已知限制
 
-1. 真實瀏覽器、真實 Windows app、tray、單一實例（BUG-016、021、022）只能人工驗證，本次尚未驗證。
+1. 真實瀏覽器僅完成連線子集；tray、單一實例 focus（BUG-016、021、022）仍需互動式桌面人工驗證。Win32 minimize / WM_CLOSE 已以一次性原生視窗驗證。
 2. E2E 沒有在 Tauri WebView 中執行（沒有使用 `tauri-driver`）。
 3. 分頁擁有權只存在於單次瀏覽器執行期間。瀏覽器重啟後還原的分頁不會被關閉，也不會被擷取（刻意選擇安全的一方）。
 4. 擁有權規則：Workspace 為 active 時新開的分頁會歸屬該 Workspace，離開時（設定為 Close Tabs）會被關閉。這是 Flow 4 需要的行為，但使用者需要知道。
@@ -144,3 +144,27 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 7. Microsoft Store / UWP app 的行程偵測未測試。
 8. `apps/desktop/tests/` 下的測試檔不經過 `tsc` 型別檢查（Vitest 只做轉譯）。
 9. BUG-027、BUG-028 尚未完全修復（見上方）。
+
+## 2026-09-29 實機手動驗證補充
+
+### 資料庫保護
+
+- 測試前已備份 `%APPDATA%\com.contextspace.desktop\context-space.sqlite` 至 `backups/context-space-before-manual-qa-20260928-233359.sqlite`。
+- 備份大小為 69,632 bytes，SHA-256 為 `5C658D699211AC7F5DA07457B2B52E0AE611D37D9493E01989CD780D3C12550F`。
+- Windows 提權啟動不採用測試程序提供的 `APPDATA` 重新導向；發現後立即停止精確的測試 PID，並以備份還原 live DB。
+- 還原後 live DB 與備份的大小及 SHA-256 完全一致；沒有 Context Space 測試程序繼續執行。
+
+### 已執行且通過
+
+- 真實 Tauri release WebView：既有 SQLite 資料載入、空白名稱驗證、Workspace 建立、URL 新增、fragment 重複 URL 阻擋、`javascript:` URL 阻擋、App resource 新增、鍵盤 Escape、主題 reload 後保留、Debug 面板顯示 Database `ok`，以及 BUG-014 的 5.6 秒背景更新期間編輯內容不被重設。
+- 真實 Microsoft Edge MV3 擴充功能（部分流程）：unpacked extension 載入成功，service worker 對真實 bridge `/api/status` 回傳 200，popup 顯示 `Desktop connected`。
+- 真實 Win32 API：新增的 ignored integration test 建立一次性原生測試視窗，實際驗證 `SW_MINIMIZE` 後程序仍存活，再以 `WM_CLOSE` 正常關閉；1/1 通過，未探索或操作任何使用者程序。
+- 自動化完整閘門於本次手動測試前已通過：Vitest unit 84/84、integration 15/15、TS regression 20/20、Rust 51/51、Rust regression 15/15、Playwright 21/21、web/extension build 成功；最終 commit 的 Windows GitHub Actions 亦通過。
+
+### 未完成／不可宣稱通過
+
+- Edge 的完整 open、redirect dedupe、close-owned-only、capture、browser restart 流程未完成。此 Windows 工作階段目前無可用互動式桌面；headed Edge 啟動會等待，headless Edge 則不載入 unpacked MV3 extension。
+- Tray menu 點擊、原生視窗 resize，以及從 tray 切換 Workspace 未執行，因為原生 UI automation surface 無法使用。
+- 真實 Tauri restart recovery 與 second-instance UI focus 未完成；不再以環境變數假裝隔離 native app data。
+- 因此手動 release checklist 仍未全數完成；本節只記錄實際執行結果。
+- 本次重新執行自動化時，21/21 Playwright 測試全部通過，但本機 runner 等待 Vite preview 子程序結束；停止精確的測試 web-server PID 後，Playwright 正常輸出 `21 passed` 並結束。這是本機 teardown 限制，不是測試案例失敗。

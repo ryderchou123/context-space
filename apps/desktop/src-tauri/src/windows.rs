@@ -427,4 +427,96 @@ mod tests {
         let own = app("Context Space", r"C:\ContextSpace\app.exe", "");
         assert!(pids_for(&own, &table).is_empty());
     }
+
+    /// Manual Windows integration check. It creates a disposable native window in this
+    /// test process, then exercises the production minimize/WM_CLOSE path. No user
+    /// process is discovered, opened, or terminated.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn win32_minimize_and_safe_close_real_window() {
+        use std::{
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+        use windows::{
+            Win32::{
+                Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+                UI::WindowsAndMessaging::{
+                    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+                    DispatchMessageW, GetMessageW, IsIconic, IsWindow, MSG, PostQuitMessage,
+                    RegisterClassW, SW_RESTORE, SW_SHOW, ShowWindow, TranslateMessage,
+                    WINDOW_EX_STYLE, WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+                },
+            },
+            core::w,
+        };
+
+        unsafe extern "system" fn window_proc(
+            hwnd: HWND,
+            message: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if message == WM_DESTROY {
+                unsafe { PostQuitMessage(0) };
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let window_thread = thread::spawn(move || unsafe {
+            let class_name = w!("ContextSpaceWin32IntegrationTest");
+            let class = WNDCLASSW {
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(window_proc),
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            assert_ne!(RegisterClassW(&class), 0);
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                w!("Context Space Win32 integration test"),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                480,
+                320,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("test window should be created");
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            sender.send(hwnd.0 as isize).unwrap();
+
+            let mut message = MSG::default();
+            while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        });
+
+        let hwnd = HWND(receiver.recv_timeout(Duration::from_secs(5)).unwrap() as *mut _);
+        let pids = HashSet::from([std::process::id()]);
+        assert_eq!(window_action(&pids, false), Ok(1));
+        let minimize_deadline = Instant::now() + Duration::from_secs(5);
+        while !unsafe { IsIconic(hwnd).as_bool() } && Instant::now() < minimize_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(unsafe { IsIconic(hwnd).as_bool() });
+
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        assert_eq!(window_action(&pids, true), Ok(1));
+        let close_deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { IsWindow(Some(hwnd)).as_bool() } && Instant::now() < close_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!unsafe { IsWindow(Some(hwnd)).as_bool() });
+        window_thread.join().unwrap();
+    }
 }
