@@ -39,7 +39,7 @@ Schema 版本存在 `PRAGMA user_version`，`db.rs` 的 `MIGRATIONS` 依序升�
 
 ## Browser bridge
 
-Bridge 固定監聽 `127.0.0.1:47651`，不綁定 LAN interface。除了 CORS preflight 外，每個 endpoint 都驗證 `X-Context-Space-Token`。Command queue 不把瀏覽資料送往網際網路；佇列中的命令 20 秒後過期，避免擴充功能重新連線時執行過時的關閉命令。MV3 worker 將 durable token 放在 `chrome.storage.local`，使用 alarms 喚醒並處理命令。
+Bridge 固定監聽 `127.0.0.1:47651`，不綁定 LAN interface。除了 CORS preflight 外，每個 endpoint 都驗證 `X-Context-Space-Token`。MV3 worker 在 `chrome.storage.local` 保存 durable token 與每次安裝獨立的 client ID，並以 `X-Context-Space-Client` 傳送。Bridge 為每個在線 client 維護獨立 command queue；Chrome 與 Edge 同時連線時都會收到切換命令，capture responses 會以正規化 URL 合併去重。沒有 client header 的舊版擴充功能會暫時歸入 `legacy` client。Command queue 不把瀏覽資料送往網際網路；佇列中的命令 20 秒後過期，避免擴充功能重新連線時執行過時的關閉命令。MV3 worker 使用 alarms 喚醒並處理命令。
 
 ### 分頁擁有權
 

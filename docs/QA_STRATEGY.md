@@ -152,7 +152,7 @@ Windows 本機需要 `cargo` 在 PATH（`%USERPROFILE%\.cargo\bin`）。
 | Snapshots | Last Session 仍正常儲存與還原 |
 | Focus Mode | 不會關閉任何未擁有或其他 Workspace 的分頁 |
 | 視窗位置還原 / 多螢幕 | app 啟動、最小化、安全關閉仍正常 |
-| Firefox | Chrome 與 Edge 整合不受影響；先解決 BUG-028 |
+| Firefox | Chrome 與 Edge 的 per-client queue 與合併 capture 不受影響；新 client 必須遵守同一 bridge protocol |
 | Cloud Sync | 離線時完全可用（local-first） |
 | AI 分類 | 未經使用者明確同意，不得自動關閉或移動任何資源 |
 

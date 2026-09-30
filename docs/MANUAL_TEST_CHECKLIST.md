@@ -6,7 +6,7 @@
 
 - [ ] `npm run qa:full` 全部通過
 - [ ] 安裝 `npm run build` 產生的安裝檔（`apps/desktop/src-tauri/target/release/bundle/nsis/`）
-- [ ] Chrome 或 Edge **擇一**載入 `apps/extension/dist`（兩個都裝會造成 BUG-028）
+- [ ] Chrome 與 Edge 都載入 `apps/extension/dist`，兩個 popup 都顯示「Desktop connected」
 - [ ] 把儀表板上的 bridge token 貼到擴充功能 popup，popup 顯示「Desktop connected」
 - [ ] 開啟 Debug 面板（`Ctrl+Shift+D`），確認「Extension: Connected」與「Database: ok」
 - [ ] 準備測試 app：VS Code、Discord、Steam、Spotify、Windows Terminal（至少三個）
@@ -28,6 +28,8 @@
 - [ ] 很長的名稱不會超出卡片；30 個以上 Workspace 可以捲動
 
 ## Browser
+
+- [ ] Chrome 與 Edge 同時連線時，兩邊都收到 open/close 命令；Last Session 合併兩邊擁有的分頁且沒有重複（BUG-028）
 
 - [ ] 開啟 Work：LinkedIn、GitHub 在背景分頁開啟
 - [ ] 再按一次「Open again」：**沒有**重複分頁（BUG-005）

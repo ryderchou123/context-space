@@ -99,7 +99,7 @@ Windows installer 產物位於 `apps/desktop/src-tauri/target/release/bundle/nsi
 2. 選擇 Load unpacked，指向 `apps/extension/dist`。
 3. 其餘步驟與 Chrome 相同。
 
-> 目前請只在 **一個** 瀏覽器安裝擴充功能。Chrome 與 Edge 同時連線時會共用同一個指令佇列（BUG-028）。
+Chrome 與 Edge 可以同時連線。每個擴充功能安裝會保存獨立 client ID；bridge 會把切換命令送到每個在線瀏覽器，並將各瀏覽器擷取到的分頁合併、去重後保存為同一個 Last Session。
 
 ## 使用方式
 

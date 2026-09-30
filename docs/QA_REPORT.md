@@ -33,18 +33,17 @@
 |---|---|---|---|---|
 | Critical | 4 | 4 | 0 | 0 |
 | High | 11 | 11 | 0 | 0 |
-| Medium | 13 | 11 | 1（BUG-027） | 1（BUG-028） |
+| Medium | 13 | 12 | 1（BUG-027） | 0 |
 | Low | 5 | 5 | 0 | 0 |
-| **合計** | **33** | **31** | **1** | **1** |
+| **合計** | **33** | **32** | **1** | **0** |
 
 ### 已修復
 
-BUG-001、002、003、004、005、006、007、008、009、010、011、012、013、014、015、016、017、018、019、020、021、022、023、024、025、026、029、030、031、032、033。其中 BUG-016、021、022 的修復**只能人工驗證**（UI 執行緒、tray、單一實例），本次尚未人工驗證，見「已知限制」。
+BUG-001、002、003、004、005、006、007、008、009、010、011、012、013、014、015、016、017、018、019、020、021、022、023、024、025、026、028、029、030、031、032、033。其中 BUG-016、021、022 的修復**只能人工驗證**（UI 執行緒、tray、單一實例），本次尚未人工驗證，見「已知限制」。
 
 ### 尚未修復
 
 - **BUG-027（Medium，部分修復）**：擴充功能離線時，網址以預設瀏覽器開啟，無法偵測重複；目前會顯示明確警告。
-- **BUG-028（Medium，開放）**：Chrome 與 Edge 同時安裝擴充功能時共用同一個指令佇列。暫行做法：只在一個瀏覽器安裝（已寫入 README）。
 
 Release gate：Critical = 0、未解決的 High regression = 0 → **自動化部分符合發佈條件**；發佈前仍需完成手動清單。
 
@@ -79,19 +78,19 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 | `test:unit` | **84/84 通過**（6 個檔案） |
 | `test:integration` | **15/15 通過**（2 個檔案） |
 | `test:regression`（Vitest） | **20/20 通過**（12 個檔案） |
-| `test:regression`（Rust `regression_bug`） | **15/15 通過** |
-| `test:rust`（全部 Rust 測試） | **51/51 通過** |
+| `test:regression`（Rust `regression_bug`） | **18/18 通過** |
+| `test:rust`（全部 Rust 測試） | **54/54 通過**，另有 1 個手動 Win32 test 預設 ignored |
 | `build:web`（桌面 web build + 擴充功能 build） | 成功 |
 
 ### Unit test
 
 - Vitest：84 個，包含 URL 正規化（以共用 fixture 驗證兩份 TS 實作）、Session、擴充功能純邏輯、Workspace / 瀏覽器資源 / app 資源 CRUD
-- Rust unit（包含在 51 個之中）：SQLite CRUD、排序、驗證、URL fixture、Windows 參數解析、行程比對、啟動 / 離開計畫、事件記錄
+- Rust unit（包含在 54 個之中）：SQLite CRUD、排序、驗證、URL fixture、Windows 參數解析、行程比對、啟動 / 離開計畫、事件記錄、per-client bridge queue 與多瀏覽器 capture merge
 
 ### Integration test
 
 - Vitest 15 個：擴充功能 `tabs.ts` 在模擬瀏覽器中的開啟 / 去重 / Work→Games / 擁有權繼承與轉移 / 離線 / 401 / token；UI 服務 ↔ 持久化
-- Rust：真實 HTTP bridge（token、狀態、404、錯誤 JSON、capture round-trip、延遲擷取、add-tabs 重複統計）；FakeExtension 驅動 Flow 3、Flow 4、共用網址、Keep tabs、擷取逾時、離線、重啟復原、忙碌鎖、12 執行緒同時切換、快速循環切換
+- Rust：真實 HTTP bridge（token、client ID、per-client routing、狀態、404、錯誤 JSON、capture round-trip、多 client 合併、延遲擷取合併、add-tabs 重複統計）；FakeExtension 驅動 Flow 3、Flow 4、共用網址、Keep tabs、擷取逾時、離線、重啟復原、忙碌鎖、12 執行緒同時切換、快速循環切換
 
 ### E2E（`npm run test:e2e`）：21/21 通過
 
@@ -111,7 +110,7 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 ### Regression test
 
 - Vitest 12 個檔案 / 20 個測試：BUG-001、002、003、005、008、014、015、020、023、025、031、032、033
-- Rust 15 個 `regression_bug_*`：BUG-004、006（×2）、007、009（×2）、010（×2）、011、012、013、017（×2）、018、029
+- Rust 18 個 `regression_bug_*`：BUG-004、006（×2）、007、009（×2）、010（×2）、011、012、013、017（×2）、018、028（×3）、029
 - 有效性驗證（突變測試）：暫時把修復還原後，對應測試確實失敗：
   - TS：BUG-003、BUG-005（2 個測試）、BUG-014（2 個）、BUG-015 → 6 失敗
   - Rust：BUG-004、006、007、009（2 個）→ 5 失敗
@@ -122,8 +121,8 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 | Build | 結果 |
 |---|---|
 | `npm run build:web` | 成功 |
-| 擴充功能 `npm run build` | 成功（`apps/extension/dist`，manifest 0.1.1） |
-| `npm run build`（Tauri release + NSIS） | **成功**，4 分 7 秒編譯；產出 `Context Space_0.1.0_x64-setup.exe`（3.10 MiB） |
+| 擴充功能 `npm run build` | 成功（`apps/extension/dist`，manifest 0.1.2） |
+| `npm run build`（Tauri release + NSIS） | **成功**；產出 `Context Space_0.1.0_x64-setup.exe`（3.11 MiB） |
 | GitHub Actions（Windows） | **成功**：[PR #10 / CI run 36513715105](https://github.com/ryderchou123/context-space/actions/runs/36513715105)；install、format、lint、typecheck、unit、integration、regression、Rust、web/extension build、Playwright E2E、Tauri/NSIS build 全部通過 |
 
 ### 原穩定化階段尚未執行的項目（後續結果見 2026-09-29 補充）
@@ -131,7 +130,7 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 - **手動測試清單**：在原穩定化階段未執行；2026-09-29 已完成下方列出的安全子集，但完整清單仍未完成。
 - **真實 Chrome / Edge 載入擴充功能**：原階段未執行；2026-09-29 已驗證 Edge 載入、bridge 驗證與 popup，完整 tab lifecycle 仍未完成。
 - **真實 Win32 最小化 / WM_CLOSE**：原階段未執行；2026-09-29 已使用一次性原生測試視窗驗證通過。
-- **GitHub labels / issues**：QA 專用 labels 與 BUG-027／BUG-028 issues 尚未建立；GitHub CLI 已安裝但目前登入 token 失效。已提供 `scripts/create-github-labels.ps1` 與 `.github/ISSUE_TEMPLATE/bug_report.md`。
+- **GitHub labels / issues**：QA 專用 labels 與 BUG-027 issue 尚未建立；BUG-028 已在本分支修復。GitHub CLI 已安裝但目前登入 token 失效；已提供 `scripts/create-github-labels.ps1` 與 `.github/ISSUE_TEMPLATE/bug_report.md`。
 
 ## 已知限制
 
@@ -143,7 +142,17 @@ Release gate：Critical = 0、未解決的 High regression = 0 → **自動化�
 6. 透過啟動器執行的 app（例如 Discord 的 `Update.exe`）需要填寫正確的行程名稱，否則每次都會嘗試啟動。
 7. Microsoft Store / UWP app 的行程偵測未測試。
 8. `apps/desktop/tests/` 下的測試檔不經過 `tsc` 型別檢查（Vitest 只做轉譯）。
-9. BUG-027、BUG-028 尚未完全修復（見上方）。
+9. BUG-027 尚未完全修復（見上方）；BUG-028 已由 per-client queue 與 capture merge 修復，但仍需 Chrome + Edge 同時連線的實機手動驗證。
+
+## 2026-09-30 BUG-028 多瀏覽器修復
+
+- Chrome／Edge extension installation 會產生並保存獨立 client ID，所有 bridge request 帶 `X-Context-Space-Client`。
+- Bridge 對每個在線 client 維護獨立、20 秒 TTL 的 queue；open、close、capture 命令不再被其中一個瀏覽器隨機取走。
+- Capture 會等待本次開始時在線的 clients，將回覆依 URL normalization 合併去重；部分 client timeout 時保留已收到的結果，延遲回覆也只做安全合併，不覆寫其他瀏覽器資料。
+- Debug 面板顯示在線 extension client 數量。
+- 自動化 regression 與真實 HTTP boundary 測試已通過；Chrome + Edge 同時連線的實機步驟已加入手動清單，尚未宣稱實機通過。
+- `npm run qa:full` 全部測試內容通過：unit 84/84、integration 15/15、TypeScript regression 20/20、Rust regression 18/18、Rust 54/54（另 1 個手動 Win32 test ignored）、Playwright 21/21、web/extension build 成功。本機 Playwright 完成案例後仍需停止精確的 Vite preview 子程序才能完成 teardown，與前次結果一致。
+- `npm run build` 成功，release app 與 3.11 MiB NSIS installer 已產生。
 
 ## 2026-09-29 實機手動驗證補充
 

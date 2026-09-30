@@ -57,14 +57,14 @@ Console / Tauri / 擴充功能 / SQLite 錯誤：原型沒有結構化記錄，�
 | BUG-025 | Low | UI | Toast 計時器互相干擾，新訊息被提早關閉 | 已修復 |
 | BUG-026 | Medium | QA | QA gate 無法通過（fmt、clippy、Vitest 載入 E2E、E2E 測試缺陷） | 已修復 |
 | BUG-027 | Medium | 切換 | 擴充功能離線時每次切換都用預設瀏覽器重開網址，無法去重 | 部分修復（有明確警告；去重需要擴充功能） |
-| BUG-028 | Medium | 擴充功能 | Chrome 與 Edge 同時安裝擴充功能時共用一個指令佇列 | 開放 |
+| BUG-028 | Medium | 擴充功能 | Chrome 與 Edge 同時安裝擴充功能時共用一個指令佇列 | 已修復 |
 | BUG-029 | Low | Bridge | 讀不到 token 時 bridge 會接受空 token | 已修復 |
 | BUG-030 | Low | Windows | 多行程 app（VS Code 等）最小化時，每個沒有視窗的子行程各產生一條警告 | 已修復 |
 | BUG-031 | Medium | 擴充功能 | 同時開多個分頁時擁有權寫入互相覆蓋而遺失 | 已修復 |
 | BUG-032 | Low | UI | `localhost:3000` 被當成 URL scheme 而被拒絕 | 已修復 |
 | BUG-033 | Medium | 無障礙 | 編輯器開啟時錯誤訊息對螢幕閱讀器不可見 | 已修復 |
 
-統計：Critical 4（全部修復）、High 11（全部修復）、Medium 13（11 修復、1 部分、1 開放）、Low 5（全部修復）。
+統計：Critical 4（全部修復）、High 11（全部修復）、Medium 13（12 修復、1 部分、0 開放）、Low 5（全部修復）。
 
 ## 3. Bug 詳細內容
 
@@ -292,8 +292,9 @@ Console / Tauri / 擴充功能 / SQLite 錯誤：原型沒有結構化記錄，�
 - 嚴重度：Medium
 - 重現步驟：Chrome 與 Edge 都安裝並設定擴充功能，切換 Workspace。
 - 實際：兩個瀏覽器輪詢同一個佇列，擷取、關閉、開啟指令會隨機交給其中一個，Session 只包含一個瀏覽器的分頁。
-- 建議修復：每個擴充功能實例註冊自己的 client id，桌面端依 client 分送指令並合併擷取結果。
-- 狀態：開放（目前建議只在一個瀏覽器安裝擴充功能，已寫入 README）
+- 修復：每個擴充功能安裝在 `chrome.storage.local` 保存 client ID，所有 bridge request 都帶 client header；桌面端為在線 client 維護獨立 queue，將命令廣播給 Chrome 與 Edge，並等待、合併、正規化去重各 client 的 capture response。延遲抵達的非空 capture 也與已保存 Session 合併，不互相覆寫。
+- 測試：`bridge::tests::regression_bug_028_each_browser_client_receives_every_command`、`regression_bug_028_http_bridge_routes_commands_by_client_header`、`regression_bug_028_capture_merges_responses_from_chrome_and_edge`，以及 TypeScript integration 對穩定 client header 的驗證。
+- 狀態：已修復
 
 ### BUG-029 — 空 token 被接受
 - 嚴重度：Low
